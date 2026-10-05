@@ -1,199 +1,279 @@
-import uuid
 import streamlit as st
-from containers import setup_container
+from openai import OpenAI
+
+from agent import Agent
+from api_client import APIClient, APIError, SessionExpired
+from config import settings
+from file_service import FileSystemTools
+from memory import APIMemory
+from tool_executor import ToolExecutor
+from tools import tools as tools_schema
+
 
 st.set_page_config(
     page_title="Chatbot con Memoria",
     page_icon="🧠",
-    layout="wide"
+    layout="wide",
 )
 
 
-@st.cache_resource
-def get_container():
-    return setup_container()
+for key, default in (
+    ("token", None),
+    ("user", None),
+    ("conversation_id", None),
+    ("agent", None),
+    ("agent_conversation_id", None),
+):
+    st.session_state.setdefault(key, default)
 
 
-container = get_container()
-user_id = "hugogonzalez"
-
-# Initialize session state for session tracking
-if "session_id" not in st.session_state:
-    st.session_state.session_id = str(uuid.uuid4())
-
-
-# Helper function to load/instantiate the agent for a given session
-def get_agent_for_session(session_id: str):
-    memory = container.memory_service(
-        session_id=session_id,
-        user_id=user_id
-    )
-    # Carga los mensajes guardados en PostgreSQL para esta sesión
-    recent_messages = memory.load_recent_messages(limit=50)
-    agent_instance = container.agent(memory=memory)
-    agent_instance.messages = recent_messages
-    return agent_instance
+def clear_session() -> None:
+    st.session_state.token = None
+    st.session_state.user = None
+    st.session_state.conversation_id = None
+    st.session_state.agent = None
+    st.session_state.agent_conversation_id = None
+    st.session_state.pop("selected_conversation_id", None)
 
 
-# Configurar agente activo en session_state
-if "agent" not in st.session_state or st.session_state.get("active_session_id") != st.session_state.session_id:
-    st.session_state.agent = get_agent_for_session(st.session_state.session_id)
-    st.session_state.active_session_id = st.session_state.session_id
+def expire_session() -> None:
+    clear_session()
+    st.rerun()
 
-agent = st.session_state.agent
-llm_client = container.embedding_service().client
 
-# ==========================================
-# SIDEBAR: Historial de Chats y Memoria Semántica
-# ==========================================
+def render_login() -> None:
+    st.title("🔐 Iniciar sesión")
+    st.caption("Accede para consultar tus conversaciones y memoria.")
+
+    with st.form("login_form"):
+        email = st.text_input("Email")
+        password = st.text_input("Contraseña", type="password")
+        submitted = st.form_submit_button("Sign in", use_container_width=True)
+
+    if not submitted:
+        return
+
+    if not email or not password:
+        st.error("Indica tu email y contraseña.")
+        return
+
+    client = APIClient(settings.api.base_url)
+    try:
+        with st.spinner("Iniciando sesión..."):
+            client.login(email, password)
+            user = client.me()
+    except APIError as error:
+        if error.status_code == 401:
+            st.error("Credenciales inválidas.")
+        else:
+            st.error(f"No se pudo iniciar sesión: {error.detail}")
+        return
+
+    st.session_state.token = client.token
+    st.session_state.user = {
+        "id": user["id"],
+        "email": user["email"],
+        "name": user["name"],
+    }
+    st.session_state.conversation_id = None
+    st.session_state.agent = None
+    st.session_state.agent_conversation_id = None
+    st.rerun()
+
+
+if not st.session_state.token:
+    render_login()
+    st.stop()
+
+
+client = APIClient(settings.api.base_url, token=st.session_state.token)
+
 with st.sidebar:
-    st.title("💬 Sesiones de Chat")
-
-    # 1. Botón para crear un Chat Limpio
-    if st.button("➕ Nuevo Chat", use_container_width=True):
-        new_session_id = str(uuid.uuid4())
-        st.session_state.session_id = new_session_id
-        st.session_state.agent = get_agent_for_session(new_session_id)
-        st.session_state.active_session_id = new_session_id
+    user = st.session_state.user or {}
+    st.title("💬 Conversaciones")
+    st.caption(user.get("name", user.get("email", "Usuario")))
+    if st.button("Sign out", use_container_width=True):
+        clear_session()
         st.rerun()
 
-    st.divider()
+try:
+    conversations = client.list_conversations()
+    if not conversations:
+        conversation = client.create_conversation()
+        conversations = [conversation]
+except SessionExpired:
+    expire_session()
+except APIError as error:
+    st.error(f"No se pudieron cargar las conversaciones: {error.detail}")
+    st.stop()
 
-    # 2. Selector de Chats Anteriores desde PostgreSQL
-    st.subheader("📜 Historial de Conversaciones")
+conversation_ids = [conversation["id"] for conversation in conversations]
+if st.session_state.conversation_id not in conversation_ids:
+    st.session_state.conversation_id = conversation_ids[0]
+
+conversation_labels = {
+    conversation["id"]: (
+        f"Chat {conversation['id'][:8]} · "
+        f"{conversation['updated_at'].replace('T', ' ')[:16]}"
+    )
+    for conversation in conversations
+}
+
+with st.sidebar:
+    if st.button("➕ Nuevo chat", use_container_width=True):
+        try:
+            new_conversation = client.create_conversation()
+        except SessionExpired:
+            expire_session()
+        except APIError as error:
+            st.error(f"No se pudo crear el chat: {error.detail}")
+        else:
+            st.session_state.conversation_id = new_conversation["id"]
+            st.session_state.agent = None
+            st.session_state.agent_conversation_id = None
+            st.rerun()
+
+    selected_conversation = st.selectbox(
+        "Seleccionar conversación",
+        options=conversation_ids,
+        index=conversation_ids.index(st.session_state.conversation_id),
+        format_func=lambda value: conversation_labels[value],
+        key="selected_conversation_id",
+    )
+    if selected_conversation != st.session_state.conversation_id:
+        st.session_state.conversation_id = selected_conversation
+        st.session_state.agent = None
+        st.session_state.agent_conversation_id = None
+        st.rerun()
+
+
+def build_agent(conversation_id: str) -> Agent:
+    memory = APIMemory(client, conversation_id)
+    executor = ToolExecutor()
+    file_service = FileSystemTools()
+    executor.register_tool("save_memory", memory.save_memory)
+    executor.register_tool("list_files", file_service.list_files)
+    executor.register_tool("read_file", file_service.read_file)
+    executor.register_tool("edit_file", file_service.edit_file)
+    executor.register_tool("delete_file", file_service.delete_file)
+    return Agent(
+        memory=memory,
+        tool_executor=executor,
+        tools_schema=tools_schema,
+    )
+
+
+conversation_id = st.session_state.conversation_id
+if (
+    st.session_state.agent is None
+    or st.session_state.agent_conversation_id != conversation_id
+):
     try:
-        past_sessions = agent.memory.list_user_sessions(limit=15)
-    except AttributeError:
-        # Fallback en caso de que list_user_sessions no esté en la interfaz
-        past_sessions = []
+        st.session_state.agent = build_agent(conversation_id)
+        st.session_state.agent_conversation_id = conversation_id
+    except SessionExpired:
+        expire_session()
+    except APIError as error:
+        st.error(f"No se pudo abrir la conversación: {error.detail}")
+        st.stop()
 
-    if past_sessions:
-        session_options = {
-            s["session_id"]: f"Chat {s['session_id'][:8]}... ({s['last_activity'].strftime('%d/%m %H:%M')})"
-            for s in past_sessions
-        }
+agent = st.session_state.agent
 
-        # Asegurar que la sesión actual figure en las opciones
-        if st.session_state.session_id not in session_options:
-            session_options[st.session_state.session_id] = "🟢 Chat Actual (Nuevo)"
-
-
-        def on_session_change():
-            selected_id = st.session_state.selected_session_key
-            st.session_state.session_id = selected_id
-            st.session_state.agent = get_agent_for_session(selected_id)
-            st.session_state.active_session_id = selected_id
-
-
-        # Selector
-        st.selectbox(
-            "Seleccionar conversación:",
-            options=list(session_options.keys()),
-            format_func=lambda x: session_options[x],
-            key="selected_session_key",
-            index=list(session_options.keys()).index(st.session_state.session_id),
-            on_change=on_session_change
-        )
-    else:
-        st.caption("No hay chats previos guardados.")
-
+with st.sidebar:
     st.divider()
-
-    # 3. Panel de Memoria Semántica (pgvector)
-    st.title("🧠 Inspección de Memoria")
-    st.markdown("Consulta en tiempo real la **memoria a largo plazo**.")
-
-    query_search = st.text_input("Buscar recuerdos por relevancia semántica:", placeholder="Ej: ¿Qué prefiero tomar?")
-    if st.button("Buscar en pgvector", use_container_width=True):
+    st.subheader("🧠 Memoria")
+    query_search = st.text_input(
+        "Buscar recuerdos",
+        placeholder="Ej: ¿Qué prefiero tomar?",
+    )
+    if st.button("Buscar memoria", use_container_width=True):
         if query_search:
-            results = agent.memory.search_memories(query_search, limit=5)
-            if results:
-                st.subheader("Resultados:")
-                for r in results:
-                    st.info(f"• {r}")
+            try:
+                results = agent.memory.search_memories(query_search, limit=5)
+            except SessionExpired:
+                expire_session()
+            except APIError as error:
+                st.error(f"No se pudo buscar memoria: {error.detail}")
             else:
-                st.warning("No se encontraron recuerdos relevantes.")
+                if results:
+                    for result in results:
+                        st.info(f"• {result}")
+                else:
+                    st.warning("No se encontraron recuerdos relevantes.")
 
-    st.divider()
+    new_fact = st.text_input(
+        "Guardar recuerdo",
+        placeholder="Ej: Le gusta el café sin azúcar",
+    )
+    if st.button("Guardar dato", use_container_width=True) and new_fact:
+        try:
+            agent.memory.save_memory(new_fact)
+        except SessionExpired:
+            expire_session()
+        except APIError as error:
+            st.error(f"No se pudo guardar el recuerdo: {error.detail}")
+        else:
+            st.success("¡Recuerdo guardado con éxito!")
 
-    st.subheader("Guardar Recuerdo Manual")
-    new_fact = st.text_input("Añadir dato relevante:", placeholder="Ej: Le gusta el café sin azúcar")
-    if st.button("Guardar dato", use_container_width=True):
-        if new_fact:
-            if agent.memory.save_memory(new_fact):
-                st.success("¡Recuerdo guardado con éxito!")
-            else:
-                st.error("Error al guardar el recuerdo.")
 
-# ==========================================
-# CHAT PRINCIPAL
-# ==========================================
-st.title("💬 Chatbot con Memoria Postgres")
-st.caption(f"Sesión activa: `{st.session_state.session_id[:8]}...`")
+st.title("💬 Chatbot con Memoria")
+st.caption(f"Conversación activa: `{conversation_id[:8]}...`")
 
-# Renderizar únicamente los mensajes de la sesión activa
-for msg in agent.messages:
-    if isinstance(msg, dict):
-        role = msg.get("role")
-        content = msg.get("content")
-    else:
-        role = getattr(msg, "role", None)
-        content = getattr(msg, "content", None)
-
+for message in agent.messages:
+    role = message.get("role") if isinstance(message, dict) else getattr(message, "role", None)
+    content = message.get("content") if isinstance(message, dict) else getattr(message, "content", None)
     if role in ["user", "assistant"] and content:
         with st.chat_message(role):
             st.markdown(content)
 
-# Entrada del usuario
+
 if user_input := st.chat_input("Escribe tu mensaje aquí..."):
-    # 1. Mostrar mensaje del usuario
-    with st.chat_message("user"):
-        st.markdown(user_input)
+    try:
+        with st.chat_message("user"):
+            st.markdown(user_input)
+        agent.memory.save_message("user", user_input)
+        agent.messages.append({"role": "user", "content": user_input})
+        agent.prepare_system_prompt(user_input)
 
-    # 2. Guardar mensaje en memoria y en la lista local del agente
-    agent.memory.save_message("user", user_input)
-    agent.messages.append({"role": "user", "content": user_input})
+        with st.chat_message("assistant"):
+            status = st.status("El agente está procesando...", expanded=True)
+            status.write("🔍 Consultando memoria semántica...")
+            message_placeholder = st.empty()
+            accumulated_text = ""
 
-    # 3. Preparar System Prompt consultando la memoria semántica
-    agent.prepare_system_prompt(user_input)
+            while True:
+                stream_response = OpenAI(
+                    base_url=settings.openrouter.base_url,
+                    api_key=settings.openrouter.api_key,
+                ).chat.completions.create(
+                    model="openrouter/free",
+                    messages=agent.messages,
+                    tools=agent.tools,
+                    stream=True,
+                )
 
-    # 4. Bucle de streaming con st.status
-    with st.chat_message("assistant"):
-        status = st.status("El agente está procesando...", expanded=True)
-        status.write("🔍 Consultando memoria semántica en pgvector...")
+                requires_continuation = False
+                for event in agent.process_stream_response(stream_response):
+                    if event["type"] == "content":
+                        accumulated_text += event["value"]
+                        message_placeholder.markdown(accumulated_text + "▌")
+                    elif event["type"] == "tool_executing":
+                        status.write(
+                            f"⚙️ **Ejecutando herramienta:** `{event['name']}`"
+                        )
+                    elif event["type"] == "requires_continuation":
+                        requires_continuation = True
 
-        message_placeholder = st.empty()
-        accumulated_text = ""
+                if not requires_continuation:
+                    break
 
-        while True:
-            # Petición con stream=True habilitado
-            stream_response = llm_client.chat.completions.create(
-                model="openrouter/free",
-                messages=agent.messages,
-                tools=agent.tools,
-                stream=True
+            message_placeholder.markdown(accumulated_text)
+            status.update(
+                label="Respuesta completada",
+                state="complete",
+                expanded=False,
             )
-
-            requires_continuation = False
-
-            # Consumir el generador del agente
-            for event in agent.process_stream_response(stream_response):
-                if event["type"] == "content":
-                    accumulated_text += event["value"]
-                    message_placeholder.markdown(accumulated_text + "▌")
-
-                elif event["type"] == "tool_executing":
-                    status.write(f"⚙️ **Ejecutando herramienta:** `{event['name']}` con argumentos: `{event['args']}`")
-
-                elif event["type"] == "requires_continuation":
-                    requires_continuation = True
-
-            if not requires_continuation:
-                break
-
-        # Limpiar el cursor final y actualizar estado
-        message_placeholder.markdown(accumulated_text)
-        status.update(label="Respuesta completada", state="complete", expanded=False)
-
-        # Guardar la respuesta final del asistente
-        agent.memory.save_message("assistant", accumulated_text)
+    except SessionExpired:
+        expire_session()
+    except APIError as error:
+        st.error(f"No se pudo guardar el mensaje: {error.detail}")

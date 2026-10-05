@@ -1,6 +1,9 @@
 import json
 from typing import Dict, Callable, Any
 
+from api_client import SessionExpired
+
+
 class ToolExecutor:
     """Gestiona el registro y ejecución dinámica de funciones para el LLM."""
 
@@ -23,4 +26,6 @@ class ToolExecutor:
             result = self._registry[fn_name](**args)
             return result if isinstance(result, (dict, list)) else {"result": result}
         except Exception as e:
+            if isinstance(e, SessionExpired):
+                raise
             return {"error": f"Error executing '{fn_name}': {str(e)}"}

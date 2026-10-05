@@ -1,0 +1,27 @@
+{
+  "id": "FEAT-002",
+  "type": "feat",
+  "description": "Integrar Streamlit con el API autenticado y reemplazar el acceso directo/anonimo al chat por sign in, sign out y conversaciones user-scoped.",
+  "status": "completed",
+  "steps": [
+    "Crear api_client.py con urllib estándar, API_BASE_URL configurable, login/me y operaciones de conversaciones, mensajes y memoria; enviar el token solo como Authorization Bearer, representar status/detail y tratar 401 como sesión expirada.",
+    "Añadir el adaptador MemoryService API-backed en memory.py o un módulo dedicado; hacer que Agent persista mensajes/memoria mediante el cliente, corregir el listado que usa db_conn inexistente y eliminar de la ruta Streamlit el DatabaseMemory/conexión PostgreSQL/user_id hardcodeado.",
+    "Refactorizar app.py: formulario de login con loading y errores claros, session_state mínimo (token, usuario mínimo, conversation_id/estado UI), creación/listado/selección de conversaciones por API, chat bloqueado antes de login, sign out visible, limpieza y rerun al cerrar sesión o expirar token, y evitar doble guardado de assistant.",
+    "Configurar API_BASE_URL en config.py/docker-compose.yml para localhost:8000 y api:8000, conservar volumen y entrypoint, compilar y ejecutar el smoke test de dos usuarios más el flujo manual de Streamlit."
+  ],
+  "acceptance_criteria": [
+    "Un visitante anónimo solo ve el formulario sign in; credenciales inválidas y errores del API no dejan sesión autenticada y muestran feedback.",
+    "Login guarda solo token, datos mínimos de usuario y estado UI necesario; no escribe secretos en archivos/query params y todas las llamadas autenticadas llevan Bearer.",
+    "Un usuario autenticado puede crear/listar/seleccionar conversaciones y enviar el chat; un 401 limpia token/agente/conversación y devuelve al login.",
+    "El sign out visible limpia la sesión y no deja historial/chat accesible hasta volver a autenticar.",
+    "Compose mantiene API 8000, Streamlit 8501 y postgres_data; el arranque con `up -d --build` ejecuta migraciones sin destruir el volumen."
+  ],
+  "verification": [
+    "OPENROUTER_API_KEY=test JWT_SECRET_KEY=test python -m compileall api app.py agent.py memory.py api_client.py",
+    "OPENROUTER_API_KEY=test JWT_SECRET_KEY=test docker compose config",
+    "OPENROUTER_API_KEY=test JWT_SECRET_KEY=test docker compose up -d --build && curl --fail http://localhost:8000/health",
+    "Smoke HTTP con dos usuarios: registrar/loginar ambos, crear y escribir con usuario A, comprobar listado/lectura propios, y comprobar 404 de listado cruzado/lectura/post/delete con usuario B; luego verificar manualmente login y sign out en http://localhost:8501"
+  ],
+  "blocked_reason": null,
+  "findings": "Implementado FEAT-002 sin acceso PostgreSQL desde Streamlit: api_client.py usa urllib estándar, API_BASE_URL y Authorization Bearer; APIError conserva status/detail y SessionExpired representa 401. APIMemory enruta mensajes y memoria al API y DatabaseMemory conserva el listado corregido usando self.conn; Agent conserva el guardado del assistant para evitar el doble guardado anterior y ToolExecutor propaga expiración de sesión. app.py ahora muestra sign in, sign out, usuario mínimo y conversation_id/agente en session_state, carga/crea/selecciona conversaciones por API y limpia la sesión ante sign out/401. Compose usa API_BASE_URL=http://api:8000 y conserva DATABASE_URL únicamente porque entrypoint.sh ejecuta Alembic en ambos contenedores; el volumen postgres_data y entrypoint se conservaron. Verificaciones ejecutadas: OPENROUTER_API_KEY=test JWT_SECRET_KEY=test python -m compileall api app.py agent.py memory.py api_client.py; OPENROUTER_API_KEY=test JWT_SECRET_KEY=test docker compose config; docker compose up -d --build (API arrancó; el proceso de build fue interrumpido por el runner antes de Streamlit, luego docker compose up -d streamlit completó el arranque); curl /health y /_stcore/health; DATABASE_URL=... alembic upgrade head --sql; el comando solicitado `alembic downgrade 0001_initial_schema --sql` falla por sintaxis requerida por Alembic (`<fromrev>:<torev>`), por lo que se validó `alembic downgrade 0002_conversations:0001_initial_schema --sql`; smoke HTTP con dos usuarios: registro/login, creación y mensaje propios, listado/lectura propios, listado cruzado vacío y lectura/post/delete cruzados 404. Queda pendiente únicamente la verificación manual visual en http://localhost:8501, no automatizable en este entorno."
+}

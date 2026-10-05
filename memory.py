@@ -1,5 +1,8 @@
 from typing import Protocol, List, Any, Dict
 
+from api_client import APIClient
+
+
 class EmbeddingService(Protocol):
     def generate_embedding(self, text: str) -> List[float]: ...
 
@@ -13,6 +16,37 @@ class MemoryService(Protocol):
         ...
     def save_memory(self, fact: str) -> bool:
         ...
+
+
+class APIMemory(MemoryService):
+    def __init__(self, api_client: APIClient, conversation_id: str):
+        self.api_client = api_client
+        self.conversation_id = conversation_id
+
+    def load_recent_messages(self, limit: int = 10) -> List[dict]:
+        messages = self.api_client.get_messages(self.conversation_id)
+        return [
+            {"role": message["role"], "content": message["content"]}
+            for message in messages[-limit:]
+        ]
+
+    def save_message(self, role: str, content: str) -> None:
+        if content:
+            self.api_client.create_message(
+                self.conversation_id,
+                role,
+                content,
+            )
+
+    def search_memories(self, query: str, limit: int = 3) -> List[str]:
+        memories = self.api_client.search_memories(query, limit)
+        return [memory["memory_text"] for memory in memories]
+
+    def save_memory(self, fact: str) -> bool:
+        if not fact:
+            return False
+        self.api_client.save_memory(fact)
+        return True
 
 
 class OpenAIEmbeddingService:
@@ -122,7 +156,7 @@ class DatabaseMemory(MemoryService):
                 ORDER BY last_activity DESC
                     LIMIT %s; \
                 """
-        with self.db_conn.cursor() as cursor:
+        with self.conn.cursor() as cursor:
             cursor.execute(query, (self.user_id, limit))
             rows = cursor.fetchall()
 
