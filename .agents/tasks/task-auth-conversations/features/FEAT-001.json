@@ -1,0 +1,26 @@
+{
+  "id": "FEAT-001",
+  "type": "feat",
+  "description": "Añadir el modelo persistente de conversaciones y endpoints FastAPI autenticados para conversaciones, mensajes y memoria, con ownership derivado del JWT.",
+  "status": "completed",
+  "steps": [
+    "Crear alembic/versions/0002_conversations.py: crear conversations con UUID, user_id nullable FK a users, timestamps y referencia legacy; insertar una fila sin owner por cada session_id existente, actualizar cada chat_messages.conversation_id, hacerlo NOT NULL, indexar FKs/owner y definir downgrade que quite solo estructuras nuevas y conserve mensajes.",
+    "Crear api/conversations/{schemas,service,router}.py con POST/GET conversations, GET/POST messages y DELETE conversation; usar get_current_user_id y filtros simultáneos por conversation_id y user_id, sin user_id en request bodies.",
+    "Crear api/memories/{schemas,service,router}.py con POST /memories/search y POST /memories, calculando embeddings y filtrando agent_memories por el UUID derivado del token; registrar ambos routers en api/main.py y mantener errores no reveladores (404 para recursos ajenos).",
+    "Validar que los contratos Pydantic, imports, router registration, migración offline y consultas funcionan junto con la auth existente, sin reescribir los datos legados."
+  ],
+  "acceptance_criteria": [
+    "Alembic upgrade offline contiene el backfill session_id->conversation_id y downgrade a 0001 conserva chat_messages.",
+    "Ningún schema de conversación/mensaje/memoria acepta user_id del cliente.",
+    "Todas las lecturas/escrituras/borrados de conversaciones y mensajes derivan el owner de Bearer JWT y un token de otro usuario recibe 404 al leer, escribir o borrar recursos ajenos.",
+    "La API expone /conversations, /conversations/{conversation_id}/messages y /memories/search con autenticación obligatoria, sin romper /auth ni /health."
+  ],
+  "verification": [
+    "OPENROUTER_API_KEY=test JWT_SECRET_KEY=test DATABASE_URL=postgresql://postgres:postgres@localhost:5432/chatbot_db python -c \"from api.main import app; paths={route.path for route in app.routes}; assert '/conversations' in paths and '/conversations/{conversation_id}/messages' in paths\"",
+    "DATABASE_URL=postgresql://postgres:postgres@localhost:5432/chatbot_db alembic upgrade head --sql",
+    "DATABASE_URL=postgresql://postgres:postgres@localhost:5432/chatbot_db alembic downgrade 0001_initial_schema --sql",
+    "OPENROUTER_API_KEY=test JWT_SECRET_KEY=test python -m compileall api"
+  ],
+  "blocked_reason": null,
+  "findings": "Decisiones: 0002 crea conversations con user_id nullable para legado, legacy_session_id único, timestamps, FK/index de owner y backfill session_id->conversation_id; chat_messages.conversation_id queda NOT NULL con FK ON DELETE CASCADE. El downgrade elimina solo la columna/FK/índices/tabla nuevos y conserva chat_messages. Los routers de conversaciones derivan siempre el owner de Bearer JWT y filtran conversation_id + user_id; los request schemas usan extra=forbid y no aceptan user_id. Memorias generan embeddings y filtran agent_memories por el UUID del JWT serializado en el VARCHAR existente. FEAT-002 debe consumir POST/GET /conversations, GET/POST /conversations/{conversation_id}/messages y POST /memories/search usando Bearer; no debe acceder directamente a PostgreSQL ni enviar user_id. Verificaciones ejecutadas: import/OpenAPI de rutas con OPENROUTER_API_KEY=test JWT_SECRET_KEY=test; alembic upgrade head --sql; alembic downgrade 0002_conversations:0001_initial_schema --sql (Alembic 1.20 requiere rango from:to para offline); python -m compileall api app.py agent.py memory.py; git diff --check. El comando de rutas literal de la especificación no funciona con la versión FastAPI instalada porque app.routes contiene _IncludedRouter sin path, pero OpenAPI confirma todos los endpoints. api_client.py no existe y compileall lo omite con código 0. No se ejecutó HTTP real porque las verificaciones de FEAT-001 son offline y no requieren un volumen PostgreSQL."
+}
