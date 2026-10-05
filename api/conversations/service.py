@@ -10,11 +10,11 @@ _CONVERSATION_COLUMNS = """
 """
 
 _MESSAGE_COLUMNS = """
-    id,
-    conversation_id,
-    role,
-    content,
-    created_at
+    messages.id,
+    messages.conversation_id,
+    messages.role,
+    messages.content,
+    messages.created_at
 """
 
 
