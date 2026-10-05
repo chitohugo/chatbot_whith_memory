@@ -11,13 +11,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# Instalar una versión fija de uv para respetar uv.lock durante el build.
+COPY --from=ghcr.io/astral-sh/uv:0.12.21 /uv /uvx /bin/
+
 # Copiar archivos de configuración de dependencias
-COPY pyproject.toml .
-# Copiar README o archivos necesarios si pyproject.toml los requiere para la compilación
+COPY pyproject.toml uv.lock ./
 COPY README* ./
 
-# Instalar las dependencias directamente desde pyproject.toml
-RUN pip install --no-cache-dir .
+# Crear el entorno reproducible desde el lockfile.
+RUN uv sync --frozen --no-dev
+ENV PATH="/app/.venv/bin:$PATH"
 
 # Copiar el resto del código
 COPY . .
