@@ -1,0 +1,18 @@
+# Monta la carpeta personal del equipo en la raíz de trabajo del contenedor.
+services:
+  api:
+    user: "${WORKSPACE_UID:-10001}:${WORKSPACE_GID:-10001}"
+    environment:
+      WORKSPACE_SCOPE: shared
+    volumes:
+      - type: bind
+        source: ${WORKSPACE_HOST_ROOT:?Define WORKSPACE_HOST_ROOT con tu carpeta personal}
+        target: /workspace
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./workspace_rules.json
+        target: /app/workspace_rules.json
+        read_only: true
+        bind:
+          create_host_path: false

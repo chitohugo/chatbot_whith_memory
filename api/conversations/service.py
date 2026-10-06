@@ -1,128 +1,59 @@
 from uuid import UUID
-
-
-_CONVERSATION_COLUMNS = """
-    id,
-    user_id,
-    legacy_session_id,
-    created_at,
-    updated_at
-"""
-
-_MESSAGE_COLUMNS = """
-    messages.id,
-    messages.conversation_id,
-    messages.role,
-    messages.content,
-    messages.created_at
-"""
+from sqlalchemy import select
+from api.models import ChatMessage, Conversation, utcnow
 
 
 def create_conversation(db, user_id: UUID):
-    with db.cursor() as cursor:
-        cursor.execute(
-            f"""
-            INSERT INTO conversations (user_id)
-            VALUES (%s)
-            RETURNING {_CONVERSATION_COLUMNS}
-            """,
-            (str(user_id),),
-        )
-        conversation = cursor.fetchone()
-
+    conversation = Conversation(user_id=user_id)
+    db.add(conversation)
     db.commit()
     return conversation
 
 
-def list_conversations(db, user_id: UUID):
-    with db.cursor() as cursor:
-        cursor.execute(
-            f"""
-            SELECT {_CONVERSATION_COLUMNS}
-            FROM conversations
-            WHERE user_id = %s
-            ORDER BY updated_at DESC, created_at DESC
-            """,
-            (str(user_id),),
-        )
-        return cursor.fetchall()
+def list_conversations(db, user_id: UUID, limit=50, offset=0, archived=False):
+    return db.scalars(select(Conversation).where(Conversation.user_id == user_id, Conversation.archived == archived).order_by(Conversation.updated_at.desc(), Conversation.id.desc()).offset(offset).limit(limit)).all()
 
 
-def get_conversation(db, conversation_id: UUID, user_id: UUID):
-    with db.cursor() as cursor:
-        cursor.execute(
-            f"""
-            SELECT {_CONVERSATION_COLUMNS}
-            FROM conversations
-            WHERE id = %s AND user_id = %s
-            """,
-            (str(conversation_id), str(user_id)),
-        )
-        return cursor.fetchone()
+def get_conversation(db, conversation_id: UUID, user_id: UUID, lock=False):
+    statement = select(Conversation).where(Conversation.id == conversation_id, Conversation.user_id == user_id)
+    if lock:
+        statement = statement.with_for_update()
+    return db.scalar(statement)
 
 
-def list_messages(db, conversation_id: UUID, user_id: UUID):
-    with db.cursor() as cursor:
-        cursor.execute(
-            f"""
-            SELECT {_MESSAGE_COLUMNS}
-            FROM chat_messages AS messages
-            INNER JOIN conversations
-                ON conversations.id = messages.conversation_id
-            WHERE messages.conversation_id = %s
-              AND conversations.user_id = %s
-            ORDER BY messages.created_at ASC, messages.id ASC
-            """,
-            (str(conversation_id), str(user_id)),
-        )
-        return cursor.fetchall()
+def list_messages(db, conversation_id: UUID, user_id: UUID, limit=50, before_id=None):
+    statement = select(ChatMessage).join(Conversation).where(ChatMessage.conversation_id == conversation_id, Conversation.user_id == user_id)
+    if before_id is not None:
+        statement = statement.where(ChatMessage.id < before_id)
+    return list(reversed(db.scalars(statement.order_by(ChatMessage.id.desc()).limit(limit)).all()))
 
 
 def create_message(db, conversation_id: UUID, user_id: UUID, role: str, content: str):
-    with db.cursor() as cursor:
-        cursor.execute(
-            """
-            INSERT INTO chat_messages (conversation_id, session_id, role, content)
-            SELECT %s, COALESCE(legacy_session_id, id::text), %s, %s
-            FROM conversations
-            WHERE id = %s AND user_id = %s
-            RETURNING id, conversation_id, role, content, created_at
-            """,
-            (
-                str(conversation_id),
-                role,
-                content,
-                str(conversation_id),
-                str(user_id),
-            ),
-        )
-        message = cursor.fetchone()
-
-        if message:
-            cursor.execute(
-                """
-                UPDATE conversations
-                SET updated_at = CURRENT_TIMESTAMP
-                WHERE id = %s AND user_id = %s
-                """,
-                (str(conversation_id), str(user_id)),
-            )
-
+    conversation = get_conversation(db, conversation_id, user_id)
+    if conversation is None:
+        return None
+    message = ChatMessage(conversation_id=conversation.id, session_id=conversation.legacy_session_id or str(conversation.id), role=role, content=content)
+    if role == "user" and not conversation.title:
+        conversation.title = " ".join(content.split())[:120]
+    conversation.updated_at = utcnow()
+    db.add(message)
     db.commit()
     return message
 
 
-def delete_conversation(db, conversation_id: UUID, user_id: UUID) -> bool:
-    with db.cursor() as cursor:
-        cursor.execute(
-            """
-            DELETE FROM conversations
-            WHERE id = %s AND user_id = %s
-            RETURNING id
-            """,
-            (str(conversation_id), str(user_id)),
-        )
-        deleted = cursor.fetchone()
+def update_conversation(db, conversation_id, user_id, changes):
+    conversation = get_conversation(db, conversation_id, user_id)
+    if conversation is not None:
+        for name, value in changes.items():
+            setattr(conversation, name, value)
+        db.commit()
+    return conversation
 
+
+def delete_conversation(db, conversation_id: UUID, user_id: UUID) -> bool:
+    conversation = get_conversation(db, conversation_id, user_id)
+    if conversation is None:
+        return False
+    db.delete(conversation)
     db.commit()
-    return deleted is not None
+    return True

@@ -1,283 +1,130 @@
-import streamlit as st
-from openai import OpenAI
+from pathlib import Path
 
-from agent import Agent
+import streamlit as st
+
 from api_client import APIClient, APIError, SessionExpired
 from config import settings
-from file_service import FileSystemTools
-from memory import APIMemory
-from tool_executor import ToolExecutor
-from tools import tools as tools_schema
+from conversation_ui import conversation_title
+from tools import TOOL_ICONS
+from ui_components import activity, clear_session, conversation_controls, history, memory_panel, navigation, \
+    pending_actions
+
+st.set_page_config(page_title="Nexo", page_icon="🧠", layout="wide")
+st.html(Path(__file__).with_name("ui.css"))
+st.session_state.setdefault("token", None)
+st.session_state.setdefault("user", None)
+st.session_state.setdefault("conversation_id", None)
 
 
-st.set_page_config(
-    page_title="Chatbot con Memoria",
-    page_icon="🧠",
-    layout="wide",
-)
-
-
-for key, default in (
-    ("token", None),
-    ("user", None),
-    ("conversation_id", None),
-    ("agent", None),
-    ("agent_conversation_id", None),
-):
-    st.session_state.setdefault(key, default)
-
-
-def clear_session() -> None:
-    st.session_state.token = None
-    st.session_state.user = None
-    st.session_state.conversation_id = None
-    st.session_state.agent = None
-    st.session_state.agent_conversation_id = None
-    st.session_state.pop("selected_conversation_id", None)
-
-
-def expire_session() -> None:
-    clear_session()
-    st.rerun()
-
-
-def render_login() -> None:
-    st.title("🔐 Iniciar sesión")
-    st.caption("Accede para consultar tus conversaciones y memoria.")
-
+def render_login():
+    if "flash" in st.session_state:
+        kind, message = st.session_state.pop("flash")
+        getattr(st, kind)(message)
+    st.title("🔐 Iniciar sesión en Nexo")
+    st.caption("Empieza una conversación nueva y conserva tu historial.")
     with st.form("login_form"):
         email = st.text_input("Email")
         password = st.text_input("Contraseña", type="password")
-        submitted = st.form_submit_button("Sign in", use_container_width=True)
-
+        submitted = st.form_submit_button("Iniciar sesión", type="primary", use_container_width=True)
     if not submitted:
         return
-
     if not email or not password:
         st.error("Indica tu email y contraseña.")
         return
-
-    client = APIClient(settings.api.base_url)
+    client = APIClient(settings.api.base_url, timeout=settings.api.timeout)
     try:
-        with st.spinner("Iniciando sesión..."):
+        with st.spinner("Iniciando sesión…"):
             client.login(email, password)
             user = client.me()
+            conversation = client.create_conversation()
     except APIError as error:
-        if error.status_code == 401:
-            st.error("Credenciales inválidas.")
-        else:
-            st.error(f"No se pudo iniciar sesión: {error.detail}")
+        st.error("Credenciales inválidas." if error.status_code == 401 else f"No se pudo iniciar sesión: {error.detail}")
         return
-
     st.session_state.token = client.token
-    st.session_state.user = {
-        "id": user["id"],
-        "email": user["email"],
-        "name": user["name"],
-    }
-    st.session_state.conversation_id = None
-    st.session_state.agent = None
-    st.session_state.agent_conversation_id = None
+    st.session_state.user = user
+    st.session_state.conversation_id = conversation["id"]
+    st.session_state.pop("conversation_search", None)
+    st.session_state.pop("message_cache", None)
     st.rerun()
+
+
+def render_chat(client):
+    conversation = navigation(client)
+    memory_panel(client)
+    conversation_id = conversation["id"]
+    messages = history(client, conversation_id)
+    if not messages:
+        with st.container(key="welcome"):
+            name = (st.session_state.user.get("name") or "").split()
+            st.caption("NUEVA CONVERSACIÓN")
+            st.title(f"Hola, {name[0]}" if name else "Hola")
+            st.header("¿En qué te ayudo hoy?")
+            st.write("Escribe tu mensaje o elige una idea para empezar.")
+        with st.container(key="suggestions"):
+            suggestions = (("Explorar archivos", "📁", "Muéstrame los archivos de mi espacio de trabajo."), ("Revisar código", "🐍", "Ayúdame a revisar el código de "), ("Guardar un recuerdo", "🧠", "Recuerda que "))
+            for column, (label, icon, prompt) in zip(st.columns(3), suggestions):
+                if column.button(label, icon=icon, key=f"suggestion_{icon}", use_container_width=True):
+                    st.session_state.chat_prompt = prompt
+            st.caption("La idea se copia en el mensaje. Puedes editarla antes de enviarla.")
+    else:
+        st.caption("CONVERSACIÓN ABIERTA")
+        st.text(conversation_title(conversation))
+    conversation_controls(client, conversation)
+    if "flash" in st.session_state:
+        kind, message = st.session_state.pop("flash")
+        getattr(st, kind)(message)
+    for message in messages:
+        if message["role"] in ("user", "assistant"):
+            with st.chat_message(message["role"]):
+                st.markdown(message["content"])
+    pending_actions(client, conversation_id)
+    activity(client, conversation_id)
+    if prompt := st.chat_input("Escribe un mensaje para empezar…" if not messages else "Escribe tu siguiente mensaje…", key="chat_prompt", max_chars=16_000):
+        with st.chat_message("user"):
+            st.markdown(prompt)
+        with st.chat_message("assistant"):
+            status = st.status("Preparando respuesta…", expanded=True)
+            placeholder = st.empty()
+            content = ""
+            error_message = None
+            try:
+                for event in client.stream_chat(conversation_id, prompt):
+                    if event["type"] == "content":
+                        content += event["value"]
+                        placeholder.markdown(content + "▌")
+                    elif event["type"] == "tool_executing":
+                        status.write(f"{TOOL_ICONS.get(event['name'], '⚙️')} Ejecutando `{event['name']}`")
+                    elif event["type"] == "tool_reused":
+                        status.write(f"♻️ Usando el resultado ya obtenido de `{event['name']}`")
+                    elif event["type"] == "warning":
+                        status.write(event["value"])
+                    elif event["type"] == "error":
+                        error_message = event["value"]
+            except SessionExpired:
+                raise
+            except APIError as error:
+                error_message = error.detail
+            placeholder.markdown(content)
+            status.update(label="Respuesta interrumpida" if error_message else "Respuesta completada", state="error" if error_message else "complete", expanded=bool(error_message))
+            if error_message:
+                st.session_state.flash = ("error", error_message)
+        st.session_state.pop("message_cache", None)
+        st.session_state.pop(f"export_{conversation_id}", None)
+        st.rerun()
 
 
 if not st.session_state.token:
     render_login()
     st.stop()
 
-
-client = APIClient(
-    settings.api.base_url,
-    token=st.session_state.token,
-    internal_key=settings.auth.secret_key,
-)
-
-with st.sidebar:
-    user = st.session_state.user or {}
-    st.title("💬 Conversaciones")
-    st.caption(user.get("name", user.get("email", "Usuario")))
-    if st.button("Sign out", use_container_width=True):
-        clear_session()
-        st.rerun()
-
+client = APIClient(settings.api.base_url, token=st.session_state.token, timeout=settings.api.timeout)
 try:
-    conversations = client.list_conversations()
-    if not conversations:
-        conversation = client.create_conversation()
-        conversations = [conversation]
+    render_chat(client)
 except SessionExpired:
-    expire_session()
+    clear_session()
+    st.session_state.flash = ("warning", "Tu sesión venció. Inicia sesión nuevamente.")
+    st.rerun()
 except APIError as error:
-    st.error(f"No se pudieron cargar las conversaciones: {error.detail}")
-    st.stop()
-
-conversation_ids = [conversation["id"] for conversation in conversations]
-if st.session_state.conversation_id not in conversation_ids:
-    st.session_state.conversation_id = conversation_ids[0]
-
-conversation_labels = {
-    conversation["id"]: (
-        f"Chat {conversation['id'][:8]} · "
-        f"{conversation['updated_at'].replace('T', ' ')[:16]}"
-    )
-    for conversation in conversations
-}
-
-with st.sidebar:
-    if st.button("➕ Nuevo chat", use_container_width=True):
-        try:
-            new_conversation = client.create_conversation()
-        except SessionExpired:
-            expire_session()
-        except APIError as error:
-            st.error(f"No se pudo crear el chat: {error.detail}")
-        else:
-            st.session_state.conversation_id = new_conversation["id"]
-            st.session_state.agent = None
-            st.session_state.agent_conversation_id = None
-            st.rerun()
-
-    selected_conversation = st.selectbox(
-        "Seleccionar conversación",
-        options=conversation_ids,
-        index=conversation_ids.index(st.session_state.conversation_id),
-        format_func=lambda value: conversation_labels[value],
-        key="selected_conversation_id",
-    )
-    if selected_conversation != st.session_state.conversation_id:
-        st.session_state.conversation_id = selected_conversation
-        st.session_state.agent = None
-        st.session_state.agent_conversation_id = None
+    st.error(error.detail)
+    if st.button("Reintentar conexión"):
         st.rerun()
-
-
-def build_agent(conversation_id: str) -> Agent:
-    memory = APIMemory(client, conversation_id)
-    executor = ToolExecutor()
-    file_service = FileSystemTools()
-    executor.register_tool("save_memory", memory.save_memory)
-    executor.register_tool("list_files", file_service.list_files)
-    executor.register_tool("read_file", file_service.read_file)
-    executor.register_tool("edit_file", file_service.edit_file)
-    executor.register_tool("delete_file", file_service.delete_file)
-    return Agent(
-        memory=memory,
-        tool_executor=executor,
-        tools_schema=tools_schema,
-    )
-
-
-conversation_id = st.session_state.conversation_id
-if (
-    st.session_state.agent is None
-    or st.session_state.agent_conversation_id != conversation_id
-):
-    try:
-        st.session_state.agent = build_agent(conversation_id)
-        st.session_state.agent_conversation_id = conversation_id
-    except SessionExpired:
-        expire_session()
-    except APIError as error:
-        st.error(f"No se pudo abrir la conversación: {error.detail}")
-        st.stop()
-
-agent = st.session_state.agent
-
-with st.sidebar:
-    st.divider()
-    st.subheader("🧠 Memoria")
-    query_search = st.text_input(
-        "Buscar recuerdos",
-        placeholder="Ej: ¿Qué prefiero tomar?",
-    )
-    if st.button("Buscar memoria", use_container_width=True):
-        if query_search:
-            try:
-                results = agent.memory.search_memories(query_search, limit=5)
-            except SessionExpired:
-                expire_session()
-            except APIError as error:
-                st.error(f"No se pudo buscar memoria: {error.detail}")
-            else:
-                if results:
-                    for result in results:
-                        st.info(f"• {result}")
-                else:
-                    st.warning("No se encontraron recuerdos relevantes.")
-
-    new_fact = st.text_input(
-        "Guardar recuerdo",
-        placeholder="Ej: Le gusta el café sin azúcar",
-    )
-    if st.button("Guardar dato", use_container_width=True) and new_fact:
-        try:
-            agent.memory.save_memory(new_fact)
-        except SessionExpired:
-            expire_session()
-        except APIError as error:
-            st.error(f"No se pudo guardar el recuerdo: {error.detail}")
-        else:
-            st.success("¡Recuerdo guardado con éxito!")
-
-
-st.title("💬 Chatbot con Memoria")
-st.caption(f"Conversación activa: `{conversation_id[:8]}...`")
-
-for message in agent.messages:
-    role = message.get("role") if isinstance(message, dict) else getattr(message, "role", None)
-    content = message.get("content") if isinstance(message, dict) else getattr(message, "content", None)
-    if role in ["user", "assistant"] and content:
-        with st.chat_message(role):
-            st.markdown(content)
-
-
-if user_input := st.chat_input("Escribe tu mensaje aquí..."):
-    try:
-        with st.chat_message("user"):
-            st.markdown(user_input)
-        agent.memory.save_message("user", user_input)
-        agent.messages.append({"role": "user", "content": user_input})
-        agent.prepare_system_prompt(user_input)
-
-        with st.chat_message("assistant"):
-            status = st.status("El agente está procesando...", expanded=True)
-            status.write("🔍 Consultando memoria semántica...")
-            message_placeholder = st.empty()
-            accumulated_text = ""
-
-            while True:
-                stream_response = OpenAI(
-                    base_url=settings.openrouter.base_url,
-                    api_key=settings.openrouter.api_key,
-                ).chat.completions.create(
-                    model="openrouter/free",
-                    messages=agent.messages,
-                    tools=agent.tools,
-                    stream=True,
-                )
-
-                requires_continuation = False
-                for event in agent.process_stream_response(stream_response):
-                    if event["type"] == "content":
-                        accumulated_text += event["value"]
-                        message_placeholder.markdown(accumulated_text + "▌")
-                    elif event["type"] == "tool_executing":
-                        status.write(
-                            f"⚙️ **Ejecutando herramienta:** `{event['name']}`"
-                        )
-                    elif event["type"] == "requires_continuation":
-                        requires_continuation = True
-
-                if not requires_continuation:
-                    break
-
-            message_placeholder.markdown(accumulated_text)
-            status.update(
-                label="Respuesta completada",
-                state="complete",
-                expanded=False,
-            )
-    except SessionExpired:
-        expire_session()
-    except APIError as error:
-        st.error(f"No se pudo guardar el mensaje: {error.detail}")

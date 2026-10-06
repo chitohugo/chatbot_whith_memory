@@ -1,82 +1,95 @@
+x-api-environment: &api-environment
+  DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@db:5432/${POSTGRES_DB:-chatbot_db}
+  OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?OPENROUTER_API_KEY must be set}
+  OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
+  OPENROUTER_MODEL: ${OPENROUTER_MODEL:-openrouter/free}
+  OPENROUTER_EMBEDDING_MODEL: ${OPENROUTER_EMBEDDING_MODEL:-text-embedding-3-small}
+  JWT_SECRET_KEY: ${JWT_SECRET_KEY:?JWT_SECRET_KEY must be set}
+  JWT_ACCESS_TOKEN_EXPIRE_MINUTES: ${JWT_ACCESS_TOKEN_EXPIRE_MINUTES:-60}
+  DB_POOL_SIZE: ${DB_POOL_SIZE:-10}
+  AGENT_MAX_STEPS: ${AGENT_MAX_STEPS:-6}
+  AGENT_MAX_SECONDS: ${AGENT_MAX_SECONDS:-120}
+  AGENT_CONTEXT_TOKENS: ${AGENT_CONTEXT_TOKENS:-16000}
+  AGENT_OUTPUT_TOKENS: ${AGENT_OUTPUT_TOKENS:-2000}
+  MODEL_TIMEOUT_SECONDS: ${MODEL_TIMEOUT_SECONDS:-30}
+  MEMORY_MIN_SIMILARITY: ${MEMORY_MIN_SIMILARITY:-0.65}
+  MAX_FILE_BYTES: ${MAX_FILE_BYTES:-100000}
+  LOGIN_ATTEMPTS_PER_MINUTE: ${LOGIN_ATTEMPTS_PER_MINUTE:-10}
+  WORKSPACE_ROOT: /workspace
+  WORKSPACE_SCOPE: ${WORKSPACE_SCOPE:-shared}
+  WORKSPACE_RULES_FILE: /app/workspace_rules.json
+
 services:
   db:
     image: pgvector/pgvector:pg16
-    container_name: chatbot_postgres
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
       POSTGRES_DB: ${POSTGRES_DB:-chatbot_db}
-    ports:
-      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "pg_isready -U ${POSTGRES_USER:-postgres} -d postgres"
-        ]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
       retries: 10
-      start_period: 5s
+    restart: unless-stopped
+
+  migrate:
+    build: .
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@db:5432/${POSTGRES_DB:-chatbot_db}
+    depends_on:
+      db:
+        condition: service_healthy
+    command: alembic upgrade head
 
   api:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: chatbot_api
+    build: .
+    user: "${WORKSPACE_UID:-10001}:${WORKSPACE_GID:-10001}"
+    environment: *api-environment
     depends_on:
-      db:
-        condition: service_healthy
-    environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-chatbot_db}
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?OPENROUTER_API_KEY must be set}
-      OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
-      OPENROUTER_EMBEDDING_MODEL: ${OPENROUTER_EMBEDDING_MODEL:-text-embedding-3-small}
-      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?JWT_SECRET_KEY must be set}
-      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
-      JWT_ACCESS_TOKEN_EXPIRE_MINUTES: ${JWT_ACCESS_TOKEN_EXPIRE_MINUTES:-60}
-      SESSION_ID: ${SESSION_ID:-default_session}
-      USER_ID: ${USER_ID:-default_user}
+      migrate:
+        condition: service_completed_successfully
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - type: bind
+        source: "${WORKSPACE_HOST_ROOT:-${HOME:-${USERPROFILE:?No se pudo detectar tu carpeta personal}}}"
+        target: /workspace
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./workspace_rules.json
+        target: /app/workspace_rules.json
+        read_only: true
+        bind:
+          create_host_path: false
     command: uvicorn api.main:app --host 0.0.0.0 --port 8000
     healthcheck:
-      test:
-        [
-          "CMD",
-          "python",
-          "-c",
-          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"
-        ]
-      interval: 5s
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready')"]
+      interval: 10s
       timeout: 5s
       retries: 10
-      start_period: 5s
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
 
   streamlit:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: chatbot_streamlit
-    depends_on:
-      db:
-        condition: service_healthy
-      api:
-        condition: service_healthy
+    build: .
     environment:
       API_BASE_URL: http://api:8000
-      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-chatbot_db}
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?OPENROUTER_API_KEY must be set}
-      OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
-      OPENROUTER_EMBEDDING_MODEL: ${OPENROUTER_EMBEDDING_MODEL:-text-embedding-3-small}
-      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?JWT_SECRET_KEY must be set}
-      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
-      JWT_ACCESS_TOKEN_EXPIRE_MINUTES: ${JWT_ACCESS_TOKEN_EXPIRE_MINUTES:-60}
+      UI_TIMEZONE: ${UI_TIMEZONE:-America/Argentina/Buenos_Aires}
+      API_TIMEOUT_SECONDS: ${API_TIMEOUT_SECONDS:-150}
+    depends_on:
+      api:
+        condition: service_healthy
     ports:
-      - "8501:8501"
+      - "127.0.0.1:8501:8501"
     command: streamlit run app.py --server.address=0.0.0.0 --server.port=8501
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
 
 volumes:
   postgres_data:

@@ -107,3 +107,5 @@ env/envvars
 .vscode
 .venv/
 .env
+workspace/
+backups/

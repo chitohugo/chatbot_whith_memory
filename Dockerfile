@@ -27,6 +27,9 @@ COPY . .
 
 # Dar permisos de ejecución al entrypoint
 RUN chmod +x /app/entrypoint.sh
+RUN groupadd --gid 10001 chatbot && useradd --uid 10001 --gid chatbot --create-home chatbot \
+    && mkdir -p /workspace && chown chatbot:chatbot /workspace
+USER chatbot
 
 ENTRYPOINT ["/app/entrypoint.sh"]
-CMD ["python", "main.py"]
+CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -1,0 +1,38 @@
+name: Tests
+on: [push, pull_request]
+jobs:
+  file-policy:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.12.21"
+      - run: uv sync --frozen
+      - run: uv run python -m unittest discover -s tests -p test_file_policy.py -v
+  tests:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_PASSWORD: test-password
+          POSTGRES_DB: chatbot_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql://postgres:test-password@localhost:5432/chatbot_test
+      JWT_SECRET_KEY: test-key-that-is-at-least-thirty-two-bytes-long
+      OPENROUTER_API_KEY: test-provider-key
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.12.21"
+      - run: uv sync --frozen
+      - run: uv run python -m unittest discover -s tests -v

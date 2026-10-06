@@ -1,12 +1,7 @@
-"""Initial database schema
-
-Revision ID: 0001_initial_schema
-Revises:
-Create Date: 2026-10-04
-"""
-
+"""Initial database schema."""
 from alembic import op
-
+import sqlalchemy as sa
+from sqlalchemy.types import UserDefinedType
 
 revision = "0001_initial_schema"
 down_revision = None
@@ -14,49 +9,34 @@ branch_labels = None
 depends_on = None
 
 
-def upgrade() -> None:
-    # PostgreSQL + pgvector
-    op.execute("CREATE EXTENSION IF NOT EXISTS vector")
-
-    op.execute(
-        """
-        CREATE TABLE IF NOT EXISTS users (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            email VARCHAR(320) NOT NULL UNIQUE,
-            password_hash TEXT NOT NULL,
-            name VARCHAR(150) NOT NULL,
-            is_active BOOLEAN NOT NULL DEFAULT TRUE
-        )
-        """
-    )
-
-    op.execute(
-        """
-        CREATE TABLE IF NOT EXISTS chat_messages (
-            id SERIAL PRIMARY KEY,
-            session_id VARCHAR(100) NOT NULL,
-            role VARCHAR(20) NOT NULL,
-            content TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-        """
-    )
-
-    op.execute(
-        """
-        CREATE TABLE IF NOT EXISTS agent_memories (
-            id SERIAL PRIMARY KEY,
-            user_id VARCHAR(100) NOT NULL,
-            memory_text TEXT NOT NULL,
-            embedding vector(1536),
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-        """
-    )
+class Vector1536(UserDefinedType):
+    def get_col_spec(self, **kwargs):
+        return "vector(1536)"
 
 
-def downgrade() -> None:
-    op.execute("DROP TABLE IF EXISTS users")
-    op.execute("DROP TABLE IF EXISTS agent_memories")
-    op.execute("DROP TABLE IF EXISTS chat_messages")
-    op.execute("DROP EXTENSION IF EXISTS vector")
+def upgrade():
+    op.execute(sa.schema.DDL("CREATE EXTENSION IF NOT EXISTS vector"))
+    op.create_table("users",
+        sa.Column("id", sa.Uuid, primary_key=True, server_default=sa.func.gen_random_uuid()),
+        sa.Column("email", sa.String(320), nullable=False, unique=True),
+        sa.Column("password_hash", sa.Text, nullable=False),
+        sa.Column("name", sa.String(150), nullable=False),
+        sa.Column("is_active", sa.Boolean, nullable=False, server_default=sa.true()))
+    op.create_table("chat_messages",
+        sa.Column("id", sa.Integer, primary_key=True),
+        sa.Column("session_id", sa.String(100), nullable=False),
+        sa.Column("role", sa.String(20), nullable=False),
+        sa.Column("content", sa.Text, nullable=False),
+        sa.Column("created_at", sa.DateTime, server_default=sa.func.now()))
+    op.create_table("agent_memories",
+        sa.Column("id", sa.Integer, primary_key=True),
+        sa.Column("user_id", sa.String(100), nullable=False),
+        sa.Column("memory_text", sa.Text, nullable=False),
+        sa.Column("embedding", Vector1536()),
+        sa.Column("created_at", sa.DateTime, server_default=sa.func.now()))
+
+
+def downgrade():
+    for table in ("agent_memories", "chat_messages", "users"):
+        op.drop_table(table)
+    op.execute(sa.schema.DDL("DROP EXTENSION IF EXISTS vector"))

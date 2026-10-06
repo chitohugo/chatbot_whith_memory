@@ -1,0 +1,4 @@
+{
+  "default_allow": ["list", "read"],
+  "rules": []
+}

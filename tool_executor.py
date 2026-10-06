@@ -2,6 +2,8 @@ import json
 from typing import Dict, Callable, Any
 
 from api_client import SessionExpired
+from pydantic import ValidationError
+from tool_models import TOOL_ARGUMENT_MODELS
 
 
 class ToolExecutor:
@@ -21,6 +23,14 @@ class ToolExecutor:
             args = json.loads(args_json)
         except json.JSONDecodeError as e:
             return {"error": f"Invalid JSON arguments: {str(e)}"}
+
+        if not isinstance(args, dict):
+            return {"error": "Tool arguments must be an object."}
+        try:
+            if fn_name in TOOL_ARGUMENT_MODELS:
+                args = TOOL_ARGUMENT_MODELS[fn_name].model_validate(args).model_dump()
+        except ValidationError as error:
+            return {"error": "Invalid tool arguments", "details": error.errors(include_input=False, include_context=False)}
 
         try:
             result = self._registry[fn_name](**args)

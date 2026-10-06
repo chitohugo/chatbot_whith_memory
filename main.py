@@ -1,17 +1,14 @@
-from containers import setup_container
+"""Entrada de consola para comprobar la disponibilidad de la API."""
+from api_client import APIClient, APIError
+from config import settings
 
 
 def main():
-    # El contenedor lee automáticamente las variables de entorno vía config.py
-    container = setup_container()
-
-    # Obtener la instancia del Agente
-    agent = container.agent()
-
-    # Iniciar flujo
-    prompt = "¿Recuerdas mis preferencias?"
-    agent.prepare_system_prompt(prompt)
-    print("Agente iniciado exitosamente con configuración validada.")
+    client = APIClient(settings.api.base_url)
+    try:
+        print(client.health())
+    except APIError as error:
+        raise SystemExit(f"API no disponible: {error.detail}") from error
 
 
 if __name__ == "__main__":

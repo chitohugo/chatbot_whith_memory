@@ -1,173 +1,51 @@
-from typing import Protocol, List, Any, Dict
-
-from api_client import APIClient
-
-
-class EmbeddingService(Protocol):
-    def generate_embedding(self, text: str) -> List[float]: ...
+from typing import Protocol
 
 
 class MemoryService(Protocol):
-    def load_recent_messages(self, limit: int = 10) -> List[dict]:
-        ...
-    def save_message(self, role: str, content: str) -> None:
-        ...
-    def search_memories(self, query: str, limit: int = 3) -> List[str]:
-        ...
-    def save_memory(self, fact: str) -> bool:
-        ...
-
-
-class APIMemory(MemoryService):
-    def __init__(self, api_client: APIClient, conversation_id: str):
-        self.api_client = api_client
-        self.conversation_id = conversation_id
-
-    def load_recent_messages(self, limit: int = 10) -> List[dict]:
-        messages = self.api_client.get_messages(self.conversation_id)
-        return [
-            {"role": message["role"], "content": message["content"]}
-            for message in messages[-limit:]
-        ]
-
-    def save_message(self, role: str, content: str) -> None:
-        if content:
-            if role == "user":
-                self.api_client.create_message(
-                    self.conversation_id,
-                    role,
-                    content,
-                )
-            else:
-                self.api_client.create_internal_message(
-                    self.conversation_id,
-                    role,
-                    content,
-                )
-
-    def search_memories(self, query: str, limit: int = 3) -> List[str]:
-        memories = self.api_client.search_memories(query, limit)
-        return [memory["memory_text"] for memory in memories]
-
-    def save_memory(self, fact: str) -> bool:
-        if not fact:
-            return False
-        self.api_client.save_memory(fact)
-        return True
+    def load_recent_messages(self, limit: int = 10) -> list[dict]: ...
+    def save_message(self, role: str, content: str) -> None: ...
+    def search_memories(self, query: str, limit: int = 3) -> list[str]: ...
+    def save_memory(self, fact: str) -> bool: ...
 
 
 class OpenAIEmbeddingService:
     def __init__(self, api_key: str, base_url: str, model: str = "text-embedding-3-small"):
         from openai import OpenAI
         self.model = model
-        self.client = OpenAI(base_url=base_url, api_key=api_key)
+        self.client = OpenAI(base_url=base_url, api_key=api_key, timeout=10, max_retries=1)
 
-    def generate_embedding(self, text: str) -> List[float]:
-        res = self.client.embeddings.create(input=text, model=self.model)
-        return res.data[0].embedding
+    def generate_embedding(self, text: str) -> list[float]:
+        result = self.client.embeddings.create(input=text, model=self.model)
+        return result.data[0].embedding
 
 
-class DatabaseMemory(MemoryService):
-    def __init__(
-        self,
-        db_connection: Any,
-        embedding_service: EmbeddingService,
-        session_id: str = "default_session",
-        user_id: str = "default_user",
-    ):
-        self.conn = db_connection
-        self.embedding_service = embedding_service
-        self.session_id = session_id
-        self.user_id = user_id
+class ORMMemory:
+    """Memoria del agente; solo se construye dentro de la API autenticada."""
+    def __init__(self, db, user_id, conversation_id):
+        self.db, self.user_id, self.conversation_id = db, user_id, conversation_id
 
-    def load_recent_messages(self, limit: int = 10) -> List[dict]:
-        try:
-            with self.conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT role, content
-                    FROM (
-                        SELECT id, role, content
-                        FROM chat_messages
-                        WHERE session_id = %s
-                        ORDER BY id DESC 
-                        LIMIT %s
-                    ) sub
-                    ORDER BY id ASC
-                    """,
-                    (self.session_id, limit),
-                )
-                rows = cur.fetchall()
-                return [{"role": r[0], "content": r[1]} for r in rows]
-        except Exception as e:
-            print(f"[Memory Error] Error al cargar historial: {e}")
-            self.conn.rollback()
-            return []
+    def load_recent_messages(self, limit=10):
+        from sqlalchemy import select
+        from api.models import ChatRun
+        from api.conversations.service import list_messages
+        previous = self.db.scalar(select(ChatRun).where(ChatRun.conversation_id == self.conversation_id, ChatRun.status == "complete").order_by(ChatRun.created_at.desc()).limit(1))
+        if previous and previous.transcript:
+            from api.models import ChatMessage
+            db_statement = select(ChatMessage).where(ChatMessage.conversation_id == self.conversation_id, ChatMessage.created_at > previous.finished_at).order_by(ChatMessage.id)
+            later = self.db.scalars(db_statement).all() if previous.finished_at else []
+            return list(previous.transcript) + [{"role": message.role, "content": message.content} for message in later]
+        return [{"role": message.role, "content": message.content} for message in list_messages(self.db, self.conversation_id, self.user_id, limit)]
 
-    def save_message(self, role: str, content: str) -> None:
-        if not content:
-            return
-        try:
-            with self.conn.cursor() as cur:
-                cur.execute(
-                    "INSERT INTO chat_messages (session_id, role, content) VALUES (%s, %s, %s)",
-                    (self.session_id, role, content),
-                )
-            self.conn.commit()
-        except Exception as e:
-            print(f"[Memory Error] Error al guardar mensaje: {e}")
-            self.conn.rollback()
+    def save_message(self, role, content):
+        from api.conversations.service import create_message
+        if content:
+            create_message(self.db, self.conversation_id, self.user_id, role, content)
 
-    def search_memories(self, query: str, limit: int = 3) -> List[str]:
-        try:
-            embedding = self.embedding_service.generate_embedding(query)
-            with self.conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT memory_text
-                    FROM agent_memories
-                    WHERE user_id = %s
-                    ORDER BY embedding <=> %s::vector
-                    LIMIT %s
-                    """,
-                    (self.user_id, str(embedding), limit),
-                )
-                return [r[0] for r in cur.fetchall()]
-        except Exception as e:
-            print(f"[Memory Error] No se pudo buscar en la memoria: {e}")
-            self.conn.rollback()
-            return []
+    def search_memories(self, query, limit=3):
+        from api.memories.service import search_memories
+        return [memory.memory_text for memory in search_memories(self.db, self.user_id, query, limit)]
 
-    def save_memory(self, fact: str) -> bool:
-        try:
-            embedding = self.embedding_service.generate_embedding(fact)
-            with self.conn.cursor() as cur:
-                cur.execute(
-                    "INSERT INTO agent_memories (user_id, memory_text, embedding) VALUES (%s, %s, %s::vector)",
-                    (self.user_id, fact, str(embedding)),
-                )
-            self.conn.commit()
-            return True
-        except Exception as e:
-            print(f"[Memory Error] No se pudo guardar la memoria: {e}")
-            self.conn.rollback()
-            return False
-
-    def list_user_sessions(self, limit: int = 20) -> List[Dict[str, Any]]:
-        """Obtiene los IDs de sesión únicos del usuario y la fecha de su último mensaje."""
-        query = """
-                SELECT session_id, MAX(created_at) as last_activity
-                FROM chat_messages
-                WHERE user_id = %s
-                GROUP BY session_id
-                ORDER BY last_activity DESC
-                    LIMIT %s; \
-                """
-        with self.conn.cursor() as cursor:
-            cursor.execute(query, (self.user_id, limit))
-            rows = cursor.fetchall()
-
-        return [
-            {"session_id": row[0], "last_activity": row[1]}
-            for row in rows
-        ]
+    def save_memory(self, fact):
+        from api.memories.service import create_memory
+        create_memory(self.db, self.user_id, fact)
+        return True

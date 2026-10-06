@@ -1,0 +1,92 @@
+[data-testid="stSidebar"] {
+    min-width: 280px;
+    max-width: 330px;
+}
+[data-testid="stSidebarUserContent"] {
+    padding-top: 1.5rem;
+}
+[data-testid="stMainBlockContainer"] {
+    max-width: 960px;
+    padding-top: 2.5rem;
+}
+.st-key-sidebar_brand h2 {
+    font-size: 1.15rem;
+    padding: 0 0 .3rem;
+}
+.st-key-new_chat button {
+    min-height: 44px;
+    border-radius: 10px;
+    font-weight: 600;
+    color: #16121f;
+}
+.st-key-history [data-testid="stVerticalBlock"] {
+    gap: .4rem;
+}
+.st-key-history button {
+    justify-content: flex-start;
+    text-align: left;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    background: transparent;
+    min-height: 40px;
+}
+.st-key-history button p {
+    text-align: left;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.st-key-history button > div,
+.st-key-suggestions button > div {
+    justify-content: flex-start;
+    min-width: 0;
+}
+.st-key-history button:hover {
+    background: rgba(167, 139, 250, .08);
+    border-color: transparent;
+}
+.st-key-history button[kind="primary"] {
+    background: rgba(167, 139, 250, .16);
+    border-color: rgba(167, 139, 250, .45);
+    color: inherit;
+}
+.st-key-history button:focus-visible,
+.st-key-suggestions button:focus-visible {
+    outline: 2px solid #a78bfa;
+    outline-offset: 2px;
+}
+.st-key-welcome {
+    padding-top: clamp(2rem, 8vh, 6rem);
+    padding-bottom: 1rem;
+}
+.st-key-welcome h1 {
+    font-size: 1.25rem;
+    font-weight: 500;
+}
+.st-key-welcome h2 {
+    font-size: clamp(1.8rem, 3vw, 2.4rem);
+    line-height: 1.2;
+    letter-spacing: -.03em;
+}
+.st-key-suggestions button {
+    min-height: 68px;
+    justify-content: flex-start;
+    text-align: left;
+    border-radius: 12px;
+    background: rgba(167, 139, 250, .04);
+}
+[data-testid="stChatInput"] {
+    border-radius: 14px;
+}
+@media (max-width: 640px) {
+    [data-testid="stMainBlockContainer"] {
+        padding-top: 4rem;
+        padding-left: 1rem;
+        padding-right: 1rem;
+    }
+    .st-key-welcome { padding-top: 1rem; }
+    .st-key-suggestions [data-testid="stHorizontalBlock"] {
+        flex-direction: column;
+    }
+    .st-key-suggestions [data-testid="stColumn"] { width: 100%; flex: auto; }
+}

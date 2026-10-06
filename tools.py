@@ -1,9 +1,18 @@
+TOOL_ICONS = {
+    "list_files": "📁",
+    "read_file": "📖",
+    "edit_file": "✏️",
+    "delete_file": "🗑️",
+    "save_memory": "🧠",
+}
+
+
 tools = [
     {
         "type": "function",
         "function": {
             "name": "list_files",
-            "description": "Lists files in the specified directory.",
+            "description": "Lists files and directories in the specified directory. Returns plain names in 'files' and items with name, type, and icon in 'entries'. Display each entry as a Markdown bullet with its icon followed by its exact name in plain text, without surrounding quotes or backticks. Do not quote the directory path either.",
             "parameters": {
                 "type": "object",
                 "properties": {
