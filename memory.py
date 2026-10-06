@@ -32,11 +32,18 @@ class APIMemory(MemoryService):
 
     def save_message(self, role: str, content: str) -> None:
         if content:
-            self.api_client.create_message(
-                self.conversation_id,
-                role,
-                content,
-            )
+            if role == "user":
+                self.api_client.create_message(
+                    self.conversation_id,
+                    role,
+                    content,
+                )
+            else:
+                self.api_client.create_internal_message(
+                    self.conversation_id,
+                    role,
+                    content,
+                )
 
     def search_memories(self, query: str, limit: int = 3) -> List[str]:
         memories = self.api_client.search_memories(query, limit)

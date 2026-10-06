@@ -3,11 +3,19 @@ name = "chatbot"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
+    "alembic>=1.17.0",
     "dependency-injector>=4.49.1",
     "dotenv>=0.9.9",
+    "fastapi>=0.116.0",
     "openai==3.23.0",
     "psycopg2-binary>=2.9.13",
     "pydantic>=2.13.5",
     "pydantic-settings>=2.15.0",
+    "pwdlib[argon2]>=0.2.0",
+    "pyjwt>=2.10.0",
+    "python-multipart>=0.0.20",
     "streamlit",
+    "uvicorn[standard]>=0.35.0",
+    "email-validator>=2.2.0",
+    "sqlalchemy>=2.0.0",
 ]

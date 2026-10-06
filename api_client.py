@@ -21,9 +21,15 @@ class SessionExpired(APIError):
 
 
 class APIClient:
-    def __init__(self, base_url: str, token: str | None = None):
+    def __init__(
+        self,
+        base_url: str,
+        token: str | None = None,
+        internal_key: str | None = None,
+    ):
         self.base_url = base_url.rstrip("/")
         self.token = token
+        self.internal_key = internal_key
 
     def login(self, email: str, password: str) -> dict[str, Any]:
         self.token = None
@@ -63,6 +69,19 @@ class APIClient:
             {"role": role, "content": content},
         )
 
+    def create_internal_message(
+        self,
+        conversation_id: str,
+        role: str,
+        content: str,
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            f"/conversations/{conversation_id}/messages/internal",
+            {"role": role, "content": content},
+            internal=True,
+        )
+
     def delete_conversation(self, conversation_id: str) -> None:
         self._request("DELETE", f"/conversations/{conversation_id}")
 
@@ -91,12 +110,15 @@ class APIClient:
         payload: dict[str, Any] | None = None,
         *,
         authenticated: bool = True,
+        internal: bool = False,
     ) -> Any:
         headers = {"Accept": "application/json"}
         if payload is not None:
             headers["Content-Type"] = "application/json"
         if authenticated and self.token:
             headers["Authorization"] = f"Bearer {self.token}"
+        if internal and self.internal_key:
+            headers["X-Internal-Request"] = self.internal_key
 
         request = Request(
             f"{self.base_url}{path}",

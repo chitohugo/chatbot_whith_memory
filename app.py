@@ -86,7 +86,11 @@ if not st.session_state.token:
     st.stop()
 
 
-client = APIClient(settings.api.base_url, token=st.session_state.token)
+client = APIClient(
+    settings.api.base_url,
+    token=st.session_state.token,
+    internal_key=settings.auth.secret_key,
+)
 
 with st.sidebar:
     user = st.session_state.user or {}

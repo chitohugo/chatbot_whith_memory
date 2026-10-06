@@ -3,10 +3,14 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from api.auth.dependencies import get_current_user_id
+from api.auth.dependencies import (
+    get_current_user_id,
+    require_internal_request,
+)
 from api.conversations.schemas import (
     ConversationCreateRequest,
     ConversationResponse,
+    InternalMessageCreateRequest,
     MessageCreateRequest,
     MessageResponse,
 )
@@ -111,6 +115,44 @@ def get_messages(
 def post_message(
     conversation_id: UUID,
     data: MessageCreateRequest,
+    current_user_id: Annotated[
+        UUID,
+        Depends(get_current_user_id),
+    ],
+    db=Depends(get_db_connection),
+):
+    if not get_conversation(db, conversation_id, current_user_id):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Conversation not found",
+        )
+
+    message = create_message(
+        db,
+        conversation_id,
+        current_user_id,
+        data.role,
+        data.content,
+    )
+
+    return MessageResponse(
+        id=message[0],
+        conversation_id=message[1],
+        role=message[2],
+        content=message[3],
+        created_at=message[4],
+    )
+
+
+@router.post(
+    "/{conversation_id}/messages/internal",
+    response_model=MessageResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_internal_request)],
+)
+def post_internal_message(
+    conversation_id: UUID,
+    data: InternalMessageCreateRequest,
     current_user_id: Annotated[
         UUID,
         Depends(get_current_user_id),

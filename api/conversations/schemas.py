@@ -20,7 +20,14 @@ class ConversationResponse(BaseModel):
 class MessageCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    role: Literal["user", "assistant", "system", "tool"]
+    role: Literal["user"]
+    content: str = Field(min_length=1)
+
+
+class InternalMessageCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    role: Literal["assistant", "system", "tool"]
     content: str = Field(min_length=1)
 
 
